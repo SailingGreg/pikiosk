@@ -66,6 +66,7 @@ pikiosk status     # Check if kiosk is running + memory usage
 pikiosk config     # Show current configuration
 pikiosk reload     # Restart with updated config
 pikiosk stop       # Stop the kiosk display
+pikiosk admin      # Start the web admin UI (port 8080)
 ```
 
 ## How it works
@@ -95,6 +96,16 @@ display:
 ```
 
 Requires `cec-utils` (installed automatically if available).
+
+## Web admin UI
+
+PiKiosk includes a browser-based admin interface for editing configuration without touching the command line. Start it with:
+
+```bash
+sudo pikiosk admin
+```
+
+This launches a web server on port 8080 (override with `PIKIOSK_ADMIN_PORT` env var). Open `http://<pi-ip>:8080` from any device on the same network to view and update settings. Changes are written directly to `/etc/pikiosk/config.yaml` and applied automatically.
 
 ## SSH access
 
