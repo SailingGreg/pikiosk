@@ -1,0 +1,37 @@
+# PiKiosk Configuration
+# Edit this file then reboot, or run: pikiosk reload
+
+# URL to display (required)
+url: "https://example.com"
+
+# Browser refresh interval in seconds (0 to disable)
+refresh: 120
+
+# Display settings
+display:
+  # GPU memory allocation in MB (128 recommended for Pi 3B+)
+  gpu_memory: 128
+
+  # Use software rendering (required for Pi 3B/3B+, disable for Pi 4/5)
+  software_render: true
+
+  # HDMI-CEC display power schedule (optional, comment out to disable)
+  # on: "08:00"
+  # off: "22:00"
+
+# Network settings
+network:
+  # Host to ping before launching browser (ensures DNS/network is ready)
+  # Derived from url if not set
+  # wait_host: "example.com"
+
+  # Maximum seconds to wait for network before launching anyway
+  wait_timeout: 120
+
+# Memory watchdog (recommended for 1GB Pi models)
+watchdog:
+  enabled: true
+  # Kill browser and restart if RAM usage exceeds this percentage
+  threshold: 90
+  # Check interval in minutes
+  interval: 5

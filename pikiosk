@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# PiKiosk — lightweight kiosk display manager for Raspberry Pi
+# Usage: pikiosk <command>
+#
+# Commands:
+#   start    — launch Cage + Chromium (called from .bash_profile)
+#   stop     — kill the running kiosk
+#   reload   — restart with updated config
+#   status   — show whether kiosk is running
+#   config   — display current configuration
+
+set -euo pipefail
+
+CONFIG_FILE="/etc/pikiosk/config.yaml"
+VERSION="0.1.0"
+
+# --- Config parsing ---
+
+read_config() {
+    python3 -c "
+import yaml, sys
+with open('$CONFIG_FILE') as f:
+    c = yaml.safe_load(f)
+
+url = c.get('url', '')
+if not url:
+    print('Error: url is required in $CONFIG_FILE', file=sys.stderr)
+    sys.exit(1)
+
+refresh = c.get('refresh', 120)
+display = c.get('display', {})
+network = c.get('network', {})
+
+# Derive wait_host from URL if not set
+wait_host = network.get('wait_host', '')
+if not wait_host:
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    wait_host = parsed.hostname or ''
+
+wait_timeout = network.get('wait_timeout', 120)
+software_render = display.get('software_render', True)
+
+print(f'URL={url}')
+print(f'REFRESH={refresh}')
+print(f'WAIT_HOST={wait_host}')
+print(f'WAIT_TIMEOUT={wait_timeout}')
+print(f'SOFTWARE_RENDER={software_render}')
+"
+}
+
+# --- Commands ---
+
+cmd_start() {
+    # Parse config
+    eval "$(read_config)" || exit 1
+
+    # Wait for network
+    if [ -n "$WAIT_HOST" ]; then
+        echo "Waiting for network ($WAIT_HOST)..."
+        SECONDS=0
+        while ! ping -c1 -W2 "$WAIT_HOST" &>/dev/null; do
+            if [ "$SECONDS" -ge "$WAIT_TIMEOUT" ]; then
+                echo "Network timeout after ${WAIT_TIMEOUT}s — launching anyway"
+                break
+            fi
+            sleep 2
+        done
+        echo "Network ready (${SECONDS}s)"
+    fi
+
+    # Build Chromium flags
+    CHROME_FLAGS=(
+        --kiosk
+        --noerrdialogs
+        --disable-infobars
+        --disable-translate
+        --no-first-run
+        --disable-features=TranslateUI
+        --disable-session-crashed-bubble
+        --disable-component-update
+        --autoplay-policy=no-user-gesture-required
+    )
+
+    if [ "$SOFTWARE_RENDER" = "True" ]; then
+        CHROME_FLAGS+=(
+            --disable-gpu
+            --use-gl=swiftshader
+            --ignore-gpu-blocklist
+        )
+    fi
+
+    echo "Starting PiKiosk v${VERSION}"
+    echo "  URL: $URL"
+    echo "  Refresh: ${REFRESH}s"
+
+    # Crash recovery loop — restart Cage if it exits
+    while true; do
+        cage -- chromium "${CHROME_FLAGS[@]}" "$URL" 2>/dev/null
+        echo "Cage exited, restarting in 5s..."
+        sleep 5
+    done
+}
+
+cmd_stop() {
+    if pgrep -x cage &>/dev/null; then
+        pkill cage
+        echo "Kiosk stopped"
+    else
+        echo "Kiosk is not running"
+    fi
+}
+
+cmd_reload() {
+    echo "Reloading kiosk..."
+    cmd_stop
+    sleep 2
+    # The .bash_profile loop or TTY autologin will restart it
+    echo "Kiosk will restart on next TTY1 login, or reboot to apply"
+}
+
+cmd_status() {
+    echo "PiKiosk v${VERSION}"
+    echo ""
+    if pgrep -x cage &>/dev/null; then
+        echo "Status: RUNNING"
+        echo "  Cage PID: $(pgrep -x cage)"
+        CHROME_PID=$(pgrep -f 'chromium.*--kiosk' | head -1 || true)
+        [ -n "$CHROME_PID" ] && echo "  Chromium PID: $CHROME_PID"
+    else
+        echo "Status: STOPPED"
+    fi
+    echo ""
+
+    # Memory usage
+    free -m | awk '/^Mem/{printf "Memory: %dMB / %dMB (%.0f%%)\n", $3, $2, $3/$2*100}'
+}
+
+cmd_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "Error: $CONFIG_FILE not found"
+        exit 1
+    fi
+
+    echo "PiKiosk v${VERSION} — Configuration"
+    echo "  Config file: $CONFIG_FILE"
+    echo ""
+
+    # Parse and display
+    python3 -c "
+import yaml
+with open('$CONFIG_FILE') as f:
+    c = yaml.safe_load(f)
+
+print(f'  URL:             {c.get(\"url\", \"(not set)\")}')
+print(f'  Refresh:         {c.get(\"refresh\", 120)}s')
+
+d = c.get('display', {})
+print(f'  GPU memory:      {d.get(\"gpu_memory\", 128)}MB')
+print(f'  Software render: {d.get(\"software_render\", True)}')
+on = d.get('on', '')
+off = d.get('off', '')
+if on and off:
+    print(f'  Display hours:   {on} — {off}')
+else:
+    print(f'  Display hours:   always on')
+
+n = c.get('network', {})
+print(f'  Wait timeout:    {n.get(\"wait_timeout\", 120)}s')
+
+w = c.get('watchdog', {})
+if w.get('enabled', True):
+    print(f'  Watchdog:        {w.get(\"threshold\", 90)}% threshold, every {w.get(\"interval\", 5)}m')
+else:
+    print(f'  Watchdog:        disabled')
+"
+}
+
+# --- Main ---
+
+case "${1:-}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    reload)  cmd_reload ;;
+    status)  cmd_status ;;
+    config)  cmd_config ;;
+    version) echo "PiKiosk v${VERSION}" ;;
+    *)
+        echo "PiKiosk v${VERSION} — Kiosk display manager for Raspberry Pi"
+        echo ""
+        echo "Usage: pikiosk <command>"
+        echo ""
+        echo "Commands:"
+        echo "  start    Launch kiosk (called automatically on boot)"
+        echo "  stop     Stop the kiosk display"
+        echo "  reload   Restart with updated config"
+        echo "  status   Show kiosk status and resource usage"
+        echo "  config   Display current configuration"
+        echo "  version  Show version"
+        ;;
+esac
