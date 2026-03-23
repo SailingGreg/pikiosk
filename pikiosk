@@ -41,11 +41,11 @@ if not wait_host:
 wait_timeout = network.get('wait_timeout', 120)
 software_render = display.get('software_render', True)
 
-print(f'URL={url}')
-print(f'REFRESH={refresh}')
-print(f'WAIT_HOST={wait_host}')
-print(f'WAIT_TIMEOUT={wait_timeout}')
-print(f'SOFTWARE_RENDER={software_render}')
+print(f\"URL='{url}'\")
+print(f\"REFRESH='{refresh}'\")
+print(f\"WAIT_HOST='{wait_host}'\")
+print(f\"WAIT_TIMEOUT='{wait_timeout}'\")
+print(f\"SOFTWARE_RENDER='{software_render}'\")
 "
 }
 
