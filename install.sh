@@ -31,7 +31,7 @@ fi
 
 echo "=== Installing packages ==="
 apt-get update -qq
-apt-get install -y -qq cage chromium
+apt-get install -y -qq cage chromium bc
 
 # CEC control (optional, for display hours)
 if command -v cec-client &>/dev/null; then
