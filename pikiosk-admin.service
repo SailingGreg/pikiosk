@@ -1,0 +1,12 @@
+[Unit]
+Description=PiKiosk Web Admin
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pikiosk admin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

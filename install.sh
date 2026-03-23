@@ -120,84 +120,27 @@ PROFILE
 chown "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME/.bash_profile"
 echo "  Installed .bash_profile for $KIOSK_USER"
 
-# --- Memory watchdog ---
+# --- Web admin UI ---
 
-echo "=== Configuring memory watchdog ==="
-WATCHDOG_ENABLED=$(python3 -c "
-import yaml
-with open('$CONFIG_DIR/config.yaml') as f:
-    c = yaml.safe_load(f)
-print(c.get('watchdog', {}).get('enabled', True))
-" 2>/dev/null || echo "True")
+echo "=== Installing admin web UI ==="
+mkdir -p /usr/local/lib/pikiosk
+cp "$SCRIPT_DIR/admin.py" /usr/local/lib/pikiosk/admin.py
+cp "$SCRIPT_DIR/pikiosk-admin.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable pikiosk-admin
+systemctl restart pikiosk-admin
+echo "  Admin UI enabled on port 8080"
 
-WATCHDOG_THRESHOLD=$(python3 -c "
-import yaml
-with open('$CONFIG_DIR/config.yaml') as f:
-    c = yaml.safe_load(f)
-print(c.get('watchdog', {}).get('threshold', 90))
-" 2>/dev/null || echo "90")
+# --- Apply config (cron jobs, display hours) ---
 
-WATCHDOG_INTERVAL=$(python3 -c "
-import yaml
-with open('$CONFIG_DIR/config.yaml') as f:
-    c = yaml.safe_load(f)
-print(c.get('watchdog', {}).get('interval', 5))
-" 2>/dev/null || echo "5")
-
-CRON_FILE="/etc/cron.d/pikiosk-watchdog"
-if [ "$WATCHDOG_ENABLED" = "True" ]; then
-    THRESHOLD_FRAC=$(echo "scale=2; $WATCHDOG_THRESHOLD / 100" | bc)
-    cat > "$CRON_FILE" <<EOF
-# PiKiosk memory watchdog — restart browser if RAM exceeds ${WATCHDOG_THRESHOLD}%
-*/$WATCHDOG_INTERVAL * * * * root free -m | awk '/^Mem/{if(\$3/\$2 > $THRESHOLD_FRAC) system("pkill cage")}'
-EOF
-    echo "  Watchdog enabled: ${WATCHDOG_THRESHOLD}% threshold, every ${WATCHDOG_INTERVAL}m"
-else
-    rm -f "$CRON_FILE"
-    echo "  Watchdog disabled"
-fi
-
-# --- Display hours ---
-
-echo "=== Configuring display hours ==="
-DISPLAY_ON=$(python3 -c "
-import yaml
-with open('$CONFIG_DIR/config.yaml') as f:
-    c = yaml.safe_load(f)
-d = c.get('display', {})
-print(d.get('on', ''))
-" 2>/dev/null || echo "")
-
-DISPLAY_OFF=$(python3 -c "
-import yaml
-with open('$CONFIG_DIR/config.yaml') as f:
-    c = yaml.safe_load(f)
-d = c.get('display', {})
-print(d.get('off', ''))
-" 2>/dev/null || echo "")
-
-CRON_DISPLAY="/etc/cron.d/pikiosk-display"
-if [ -n "$DISPLAY_ON" ] && [ -n "$DISPLAY_OFF" ]; then
-    ON_H=$(echo "$DISPLAY_ON" | cut -d: -f1)
-    ON_M=$(echo "$DISPLAY_ON" | cut -d: -f2)
-    OFF_H=$(echo "$DISPLAY_OFF" | cut -d: -f1)
-    OFF_M=$(echo "$DISPLAY_OFF" | cut -d: -f2)
-    cat > "$CRON_DISPLAY" <<EOF
-# PiKiosk display hours — HDMI-CEC power control
-$ON_M $ON_H * * * root echo "on 0" | cec-client -s -d 1
-$OFF_M $OFF_H * * * root echo "standby 0" | cec-client -s -d 1
-EOF
-    echo "  Display on at $DISPLAY_ON, standby at $DISPLAY_OFF"
-else
-    rm -f "$CRON_DISPLAY"
-    echo "  Display hours not configured (always on)"
-fi
+echo "=== Applying configuration ==="
+/usr/local/bin/pikiosk apply
 
 echo ""
 echo "=== Installation complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit /etc/pikiosk/config.yaml to set your URL"
+echo "  1. Edit config at /etc/pikiosk/config.yaml or http://$(hostname -I | awk '{print $1}'):8080"
 echo "  2. Reboot to start the kiosk: sudo reboot"
 echo ""
 echo "Useful commands:"
@@ -205,3 +148,4 @@ echo "  pikiosk status     — check if kiosk is running"
 echo "  pikiosk reload     — restart with updated config"
 echo "  pikiosk stop       — stop the kiosk display"
 echo "  pikiosk config     — show current configuration"
+echo "  pikiosk set <k> <v> — update a config setting"

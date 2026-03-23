@@ -49,6 +49,10 @@ print(f\"SOFTWARE_RENDER='{software_render}'\")
 "
 }
 
+# --- Valid config keys (whitelist) ---
+
+VALID_KEYS="url refresh display.gpu_memory display.software_render display.on display.off network.wait_host network.wait_timeout watchdog.enabled watchdog.threshold watchdog.interval"
+
 # --- Commands ---
 
 cmd_start() {
@@ -176,6 +180,203 @@ else:
 "
 }
 
+cmd_set() {
+    local key="$1"
+    local value="$2"
+
+    # Validate key against whitelist
+    local valid=false
+    for k in $VALID_KEYS; do
+        if [ "$k" = "$key" ]; then
+            valid=true
+            break
+        fi
+    done
+    if [ "$valid" = "false" ]; then
+        echo "Error: unknown key '$key'"
+        echo "Valid keys: $VALID_KEYS"
+        exit 1
+    fi
+
+    # Require root for writing config and cron files
+    if [ "$EUID" -ne 0 ]; then
+        echo "Error: pikiosk set requires root (use sudo)"
+        exit 1
+    fi
+
+    # Update YAML using targeted line replacement to preserve comments
+    python3 -c "
+import yaml, sys, re, fcntl
+
+config_path = '$CONFIG_FILE'
+key = '$key'
+value = '''$value'''
+
+# Type coerce
+if value.lower() == 'true':
+    value = True
+elif value.lower() == 'false':
+    value = False
+else:
+    try:
+        value = int(value)
+    except ValueError:
+        pass  # keep as string
+
+# Load current config
+with open(config_path) as f:
+    fcntl.flock(f, fcntl.LOCK_SH)
+    config = yaml.safe_load(f) or {}
+    raw = open(config_path).read()
+
+# Set the value in the parsed config
+parts = key.split('.')
+obj = config
+for p in parts[:-1]:
+    if p not in obj or not isinstance(obj[p], dict):
+        obj[p] = {}
+    obj = obj[p]
+obj[parts[-1]] = value
+
+# Targeted line replacement in raw file to preserve comments
+lines = raw.splitlines()
+new_lines = []
+if len(parts) == 1:
+    # Top-level key
+    pattern = re.compile(r'^(\s*#?\s*)' + re.escape(parts[0]) + r'\s*:.*')
+    found = False
+    for line in lines:
+        m = pattern.match(line)
+        if m and not found:
+            found = True
+            if isinstance(value, bool):
+                val_str = str(value).lower()
+            elif isinstance(value, int):
+                val_str = str(value)
+            else:
+                val_str = '\"' + str(value) + '\"'
+            new_lines.append(f'{parts[0]}: {val_str}')
+        else:
+            new_lines.append(line)
+    if not found:
+        if isinstance(value, bool):
+            val_str = str(value).lower()
+        elif isinstance(value, int):
+            val_str = str(value)
+        else:
+            val_str = '\"' + str(value) + '\"'
+        new_lines.append(f'{parts[0]}: {val_str}')
+else:
+    # Nested key (one level deep)
+    parent, child = parts[0], parts[1]
+    parent_pattern = re.compile(r'^' + re.escape(parent) + r'\s*:')
+    child_pattern = re.compile(r'^(\s*#?\s*)' + re.escape(child) + r'\s*:.*')
+    in_parent = False
+    found = False
+    for line in lines:
+        if parent_pattern.match(line):
+            in_parent = True
+            new_lines.append(line)
+            continue
+        if in_parent and line.strip() and not line.startswith(' ') and not line.startswith('\t'):
+            in_parent = False
+        if in_parent and not found:
+            m = child_pattern.match(line)
+            if m:
+                found = True
+                if isinstance(value, bool):
+                    val_str = str(value).lower()
+                elif isinstance(value, int):
+                    val_str = str(value)
+                else:
+                    val_str = '\"' + str(value) + '\"'
+                new_lines.append(f'  {child}: {val_str}')
+                continue
+        new_lines.append(line)
+    if not found:
+        # Append under parent section
+        if isinstance(value, bool):
+            val_str = str(value).lower()
+        elif isinstance(value, int):
+            val_str = str(value)
+        else:
+            val_str = '\"' + str(value) + '\"'
+        # Find parent and insert after it
+        for i, line in enumerate(new_lines):
+            if parent_pattern.match(line):
+                new_lines.insert(i + 1, f'  {child}: {val_str}')
+                break
+
+with open(config_path, 'w') as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    f.write('\n'.join(new_lines) + '\n')
+
+print(f'Set {key} = {value}')
+"
+
+    # Apply side effects
+    cmd_apply
+}
+
+cmd_apply() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "Error: pikiosk apply requires root (use sudo)"
+        exit 1
+    fi
+
+    # Read watchdog config
+    eval "$(python3 -c "
+import yaml
+with open('$CONFIG_FILE') as f:
+    c = yaml.safe_load(f)
+w = c.get('watchdog', {})
+print(f\"WATCHDOG_ENABLED='{'True' if w.get('enabled', True) else 'False'}'\")
+print(f\"WATCHDOG_THRESHOLD='{w.get('threshold', 90)}'\")
+print(f\"WATCHDOG_INTERVAL='{w.get('interval', 5)}'\")
+d = c.get('display', {})
+print(f\"DISPLAY_ON='{d.get('on', '')}'\")
+print(f\"DISPLAY_OFF='{d.get('off', '')}'\")
+")"
+
+    # Watchdog cron
+    CRON_FILE="/etc/cron.d/pikiosk-watchdog"
+    if [ "$WATCHDOG_ENABLED" = "True" ]; then
+        THRESHOLD_FRAC=$(echo "scale=2; $WATCHDOG_THRESHOLD / 100" | bc)
+        cat > "$CRON_FILE" <<EOF
+# PiKiosk memory watchdog — restart browser if RAM exceeds ${WATCHDOG_THRESHOLD}%
+*/$WATCHDOG_INTERVAL * * * * root free -m | awk '/^Mem/{if(\$3/\$2 > $THRESHOLD_FRAC) system("pkill cage")}'
+EOF
+        echo "  Watchdog: ${WATCHDOG_THRESHOLD}% threshold, every ${WATCHDOG_INTERVAL}m"
+    else
+        rm -f "$CRON_FILE"
+        echo "  Watchdog: disabled"
+    fi
+
+    # Display hours cron
+    CRON_DISPLAY="/etc/cron.d/pikiosk-display"
+    if [ -n "$DISPLAY_ON" ] && [ -n "$DISPLAY_OFF" ]; then
+        ON_H=$(echo "$DISPLAY_ON" | cut -d: -f1)
+        ON_M=$(echo "$DISPLAY_ON" | cut -d: -f2)
+        OFF_H=$(echo "$DISPLAY_OFF" | cut -d: -f1)
+        OFF_M=$(echo "$DISPLAY_OFF" | cut -d: -f2)
+        cat > "$CRON_DISPLAY" <<EOF
+# PiKiosk display hours — HDMI-CEC power control
+$ON_M $ON_H * * * root echo "on 0" | cec-client -s -d 1
+$OFF_M $OFF_H * * * root echo "standby 0" | cec-client -s -d 1
+EOF
+        echo "  Display hours: $DISPLAY_ON — $DISPLAY_OFF"
+    else
+        rm -f "$CRON_DISPLAY"
+        echo "  Display hours: always on"
+    fi
+
+    echo "  Config applied"
+}
+
+cmd_admin() {
+    exec python3 /usr/local/lib/pikiosk/admin.py "$@"
+}
+
 # --- Main ---
 
 case "${1:-}" in
@@ -184,6 +385,9 @@ case "${1:-}" in
     reload)  cmd_reload ;;
     status)  cmd_status ;;
     config)  cmd_config ;;
+    set)     cmd_set "${2:-}" "${3:-}" ;;
+    apply)   cmd_apply ;;
+    admin)   shift; cmd_admin "$@" ;;
     version) echo "PiKiosk v${VERSION}" ;;
     *)
         echo "PiKiosk v${VERSION} — Kiosk display manager for Raspberry Pi"
@@ -191,11 +395,14 @@ case "${1:-}" in
         echo "Usage: pikiosk <command>"
         echo ""
         echo "Commands:"
-        echo "  start    Launch kiosk (called automatically on boot)"
-        echo "  stop     Stop the kiosk display"
-        echo "  reload   Restart with updated config"
-        echo "  status   Show kiosk status and resource usage"
-        echo "  config   Display current configuration"
-        echo "  version  Show version"
+        echo "  start              Launch kiosk (called automatically on boot)"
+        echo "  stop               Stop the kiosk display"
+        echo "  reload             Restart with updated config"
+        echo "  status             Show kiosk status and resource usage"
+        echo "  config             Display current configuration"
+        echo "  set <key> <value>  Update a config setting (requires sudo)"
+        echo "  apply              Apply config changes (cron jobs, etc.)"
+        echo "  admin              Start the web admin UI"
+        echo "  version            Show version"
         ;;
 esac
