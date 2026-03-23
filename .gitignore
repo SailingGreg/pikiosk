@@ -2,3 +2,8 @@
 *.swo
 *~
 .DS_Store
+
+# Development utilities
+CLAUDE.md
+.claude/
+deploy.sh
