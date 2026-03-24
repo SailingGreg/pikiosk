@@ -160,6 +160,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .btn-save:disabled { background: #aaa; cursor: not-allowed; }
     .btn-reload { background: #e0e0e0; color: #333; }
     .btn-reload:hover { background: #d0d0d0; }
+    .btn-reboot { background: #f0ad4e; color: #fff; }
+    .btn-reboot:hover { background: #ec971f; }
+    .btn-shutdown { background: #d9534f; color: #fff; }
+    .btn-shutdown:hover { background: #c9302c; }
+    .power-actions { margin-top: 1rem; display: flex; gap: 0.5rem; }
+    .confirm-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                       background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center; }
+    .confirm-overlay.show { display: flex; }
+    .confirm-box { background: #fff; border-radius: 8px; padding: 1.5rem; max-width: 320px;
+                   text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .confirm-box p { margin-bottom: 1rem; font-size: 1rem; }
+    .confirm-box .actions { display: flex; gap: 0.5rem; justify-content: center; }
     .toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
              background: #333; color: #fff; padding: 0.6rem 1.2rem; border-radius: 6px;
              font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
@@ -177,6 +189,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <button type="button" class="btn-reload" onclick="reloadKiosk()">Reload Kiosk</button>
 </div>
 </form>
+
+<div class="card">
+    <h2>System</h2>
+    <div class="power-actions">
+        <button type="button" class="btn-reboot" onclick="confirmAction('reboot')">Reboot</button>
+        <button type="button" class="btn-shutdown" onclick="confirmAction('shutdown')">Shutdown</button>
+    </div>
+</div>
+
+<div class="confirm-overlay" id="confirmOverlay">
+    <div class="confirm-box">
+        <p id="confirmMsg"></p>
+        <div class="actions">
+            <button class="btn-save" id="confirmBtn" onclick="doAction()">Confirm</button>
+            <button class="btn-reload" onclick="cancelAction()">Cancel</button>
+        </div>
+    </div>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -260,6 +290,34 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     btn.textContent = 'Save & Apply';
     refreshStatus();
 });
+
+let pendingAction = null;
+
+function confirmAction(action) {
+    pendingAction = action;
+    const msg = action === 'shutdown'
+        ? 'Shut down this Pi? You will need physical access to power it back on.'
+        : 'Reboot this Pi? It will be unavailable for about a minute.';
+    document.getElementById('confirmMsg').textContent = msg;
+    document.getElementById('confirmBtn').className = action === 'shutdown' ? 'btn-shutdown' : 'btn-reboot';
+    document.getElementById('confirmOverlay').classList.add('show');
+}
+
+function cancelAction() {
+    pendingAction = null;
+    document.getElementById('confirmOverlay').classList.remove('show');
+}
+
+async function doAction() {
+    const action = pendingAction;
+    cancelAction();
+    showToast(action === 'shutdown' ? 'Shutting down...' : 'Rebooting...', 5000);
+    try {
+        await fetch('/api/' + action, {method: 'POST'});
+    } catch(e) {
+        // Connection will drop on success, so errors are expected
+    }
+}
 
 async function reloadKiosk() {
     showToast('Reloading kiosk...');
@@ -380,6 +438,15 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"ok": result.returncode == 0, "output": result.stdout.strip()})
             except Exception as e:
                 self.send_json({"ok": False, "error": str(e)})
+
+        elif self.path == "/api/shutdown":
+            self.send_json({"ok": True, "output": "Shutting down..."})
+            subprocess.Popen(["shutdown", "-h", "now"])
+
+        elif self.path == "/api/reboot":
+            self.send_json({"ok": True, "output": "Rebooting..."})
+            subprocess.Popen(["shutdown", "-r", "now"])
+
         else:
             self.send_error(404)
 
