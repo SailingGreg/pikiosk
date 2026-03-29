@@ -117,10 +117,24 @@ cmd_stop() {
 
 cmd_reload() {
     echo "Reloading kiosk..."
+
+    # Kill the pikiosk start process (the while-true crash loop) and Cage
+    # The crash loop holds stale config, so we must kill it — not just Cage
+    local start_pid
+    start_pid=$(pgrep -f 'pikiosk start' | grep -v "$$" | head -1 || true)
+
     cmd_stop
-    sleep 2
-    # The .bash_profile loop or TTY autologin will restart it
-    echo "Kiosk will restart on next TTY1 login, or reboot to apply"
+    sleep 1
+
+    if [ -n "$start_pid" ] && kill -0 "$start_pid" 2>/dev/null; then
+        kill "$start_pid" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Restart TTY1 getty — triggers autologin -> .bash_profile -> pikiosk start
+    # This follows the same boot flow so Cage gets a proper session
+    systemctl restart getty@tty1
+    echo "Kiosk reloading with new config"
 }
 
 cmd_status() {
