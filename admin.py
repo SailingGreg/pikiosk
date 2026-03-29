@@ -283,7 +283,17 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     if (errors.length) {
         showToast('Errors: ' + errors.join(', '), 4000);
     } else {
-        showToast('Saved ' + changes.length + ' setting(s)');
+        // Only reload kiosk if a display-affecting setting changed
+        const reloadKeys = ['url', 'refresh', 'display.software_render'];
+        const needsReload = changes.some(c => reloadKeys.includes(c.key));
+        if (needsReload) {
+            showToast('Saved ' + changes.length + ' setting(s). Reloading kiosk...');
+            try {
+                await fetch('/api/reload', {method: 'POST'});
+            } catch(e) {}
+        } else {
+            showToast('Saved ' + changes.length + ' setting(s)');
+        }
     }
 
     btn.disabled = false;
